@@ -1,12 +1,23 @@
 // FNIRSI IR40 BLE client. Protocol: see AGENTS.md.
 // Packet = u16 BE payload length + N records of 7 bytes: 02 <tag> <type> <u32 BE value>.
 
-const SERVICE = 0xee01;
-const RX_CHAR = 0xee02; // notify: device -> app
-const TX_CHAR = 0xee03; // write: app -> device
+// Full 128-bit UUID strings. Bluefy (iOS) rejects the full requestDevice call when a UUID is a number.
+const uuid16 = (n) => `0000${n.toString(16).padStart(4, '0')}-0000-1000-8000-00805f9b34fb`;
+const SERVICE = uuid16(0xee01);
+const RX_CHAR = uuid16(0xee02); // notify: device -> app
+const TX_CHAR = uuid16(0xee03); // write: app -> device
 
 export const TAG = { MODE: 0x01, SIDE_A: 0x02, SIDE_B: 0x03, RESULT: 0x05, UNIT: 0x06, CONTINUOUS: 0x08, REFERENCE: 0x0a };
 export const MODE = { LINEAR: 0 };
+
+// Text for any rejection value. Bluefy can reject with a value that is not an Error.
+export function errorText(e) {
+  if (e == null) return 'nieznany błąd';
+  if (typeof e === 'string') return e;
+  const parts = [e.name, e.message].filter((x) => x && x !== 'undefined');
+  if (parts.length) return parts.join(': ');
+  try { return JSON.stringify(e); } catch { return String(e); }
+}
 
 export const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
 
@@ -54,16 +65,30 @@ export class IR40 extends EventTarget {
     if (!IR40.supported) throw new Error('Ta przeglądarka nie obsługuje Web Bluetooth');
     this.setState('connecting');
     try {
-      const device = await navigator.bluetooth.requestDevice({
-        filters: [{ namePrefix: 'FNIRSI' }, { namePrefix: 'fnirsi' }, { services: [SERVICE] }],
-        optionalServices: [SERVICE],
-      });
+      let device;
+      try {
+        device = await navigator.bluetooth.requestDevice({
+          filters: [{ namePrefix: 'fnirsi' }, { services: [SERVICE] }],
+          optionalServices: [SERVICE],
+        });
+      } catch (e) {
+        // User closed the chooser or no device: stop. Other rejection: try a simpler filter once.
+        if (e?.name === 'NotFoundError' || e?.name === 'AbortError') throw e;
+        this.addLog(`requestDevice #1: ${errorText(e)}`);
+        device = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: 'fnirsi' }], optionalServices: [SERVICE] });
+      }
       this.attach(device);
       await this.openGatt();
     } catch (e) {
       this.setState('disconnected');
+      if (e?.name !== 'NotFoundError' && e?.name !== 'AbortError') this.addLog(`connect: ${errorText(e)}`);
       throw e;
     }
+  }
+
+  addLog(text) {
+    this.log.unshift({ t: Date.now(), hex: text });
+    this.log.length = Math.min(this.log.length, 50);
   }
 
   // Add the disconnect listener only once per device object.
@@ -128,8 +153,7 @@ export class IR40 extends EventTarget {
 
   onPacket(dataView) {
     const bytes = new Uint8Array(dataView.buffer, dataView.byteOffset, dataView.byteLength);
-    this.log.unshift({ t: Date.now(), hex: hex(bytes) });
-    this.log.length = Math.min(this.log.length, 50);
+    this.addLog(hex(bytes));
     const f = parsePacket(bytes);
     if (!f) return;
     if (TAG.UNIT in f) this.unit = f[TAG.UNIT];

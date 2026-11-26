@@ -1,6 +1,6 @@
 // App shell: router, screens, rangefinder link.
 import * as db from './db.js';
-import { ir40, IR40, MODE } from './ble.js';
+import { ir40, IR40, MODE, errorText } from './ble.js';
 import { Editor } from './editor.js';
 import { render, fitView } from './render.js';
 import { bounds, edgeCount, polyMetrics } from './geometry.js';
@@ -120,7 +120,7 @@ async function onBleTap() {
     await ir40.connect();
     toast('Dalmierz połączony. Mierz przyciskiem na urządzeniu.', 'ok');
   } catch (e) {
-    if (e.name !== 'NotFoundError' && e.name !== 'AbortError') toast(`Błąd: ${e.message}`, 'err');
+    if (e?.name !== 'NotFoundError' && e?.name !== 'AbortError') toast(`Błąd połączenia: ${errorText(e)}`, 'err');
   }
 }
 
