@@ -18,6 +18,7 @@ const settings = { unit: 'mm', sound: true, sim: false };
 const readings = []; // last readings: { mm, t, used }
 let screen = null; // { name, cleanup, onMeasure }
 let urls = []; // object URLs to free on screen change
+let curHash = '', prevHash = ''; // For back from a wall photo to its plan.
 
 const NAME_HINTS = ['Kuchnia', 'Salon', 'Sypialnia', 'Łazienka', 'Przedpokój', 'Całe mieszkanie', 'Balkon', 'Pokój dziecka'];
 
@@ -70,6 +71,8 @@ function saveSettings() {
 
 // ---------- router ----------
 async function route() {
+  prevHash = curHash;
+  curHash = location.hash;
   screen?.cleanup?.();
   screen = null;
   urls.forEach((u) => URL.revokeObjectURL(u));
@@ -264,7 +267,7 @@ async function showFolder(id) {
         return `<li class="tile" data-id="${p.id}">
           <div class="thumb">${p.thumb ? `<img src="${objUrl(p.thumb)}" alt="">` : `<span>${p.kind === 'photo' ? ICON.image : ICON.sketch}</span>`}</div>
           <div class="tile-body"><b>${esc(p.name)}</b>
-            <small>${p.kind === 'photo' ? 'Zdjęcie' : 'Rysunek'} · <span class="${st.total && st.done === st.total ? 'ok' : st.total ? 'warn' : ''}">${st.done}/${st.total} wymiarów</span></small></div>
+            <small>${p.parent ? 'Zdjęcie ściany' : p.kind === 'photo' ? 'Zdjęcie' : 'Rysunek'} · <span class="${st.total && st.done === st.total ? 'ok' : st.total ? 'warn' : ''}">${st.done}/${st.total} wymiarów</span></small></div>
           <button class="icon-btn" data-pmore="${p.id}" aria-label="Opcje">${ICON.more}</button>
         </li>`;
       }).join('')}</ul>`
@@ -315,16 +318,28 @@ async function newProject(f) {
   if (!kind) return;
   let photo = null;
   if (kind !== 'sketch') {
-    const file = await pickPhoto(kind === 'camera');
-    if (!file) return;
-    toast('Przygotowuję zdjęcie…');
-    try { photo = await importPhoto(file); } catch (e) { return toast(e.message, 'err'); }
+    photo = await takePhoto(kind === 'camera');
+    if (!photo) return;
   }
   const name = await ask('Nazwa pomiaru', '', { placeholder: 'np. Kuchnia', ok: 'Utwórz', suggestions: NAME_HINTS });
   if (!name) return;
+  const p = await addProject(f, name, photo);
+  go(`#/p/${p.id}`);
+}
+
+// Pick and scale a photo. Return { blob, width, height } or null.
+async function takePhoto(camera) {
+  const file = await pickPhoto(camera);
+  if (!file) return null;
+  toast('Przygotowuję zdjęcie…');
+  try { return await importPhoto(file); } catch (e) { toast(e.message, 'err'); return null; }
+}
+
+// Save a new project. photo = null: sketch.
+async function addProject(f, name, photo, extra = {}) {
   const p = {
     id: db.uid(), folderId: f.id, name, kind: photo ? 'photo' : 'sketch',
-    shapes: [], createdAt: Date.now(), updatedAt: Date.now(), thumb: null,
+    shapes: [], createdAt: Date.now(), updatedAt: Date.now(), thumb: null, ...extra,
   };
   if (photo) {
     p.imageId = db.uid();
@@ -336,7 +351,18 @@ async function newProject(f) {
   f.updatedAt = Date.now();
   await db.put('folders', f);
   db.requestPersist();
-  go(`#/p/${p.id}`);
+  return p;
+}
+
+// Delete a project. A wall photo: remove the link from its plan too.
+async function removeProject(p) {
+  if (p.parent) {
+    const parent = await db.get('projects', p.parent);
+    let hit = false;
+    for (const s of parent?.shapes || []) for (const e of s.edges || []) if (e.photo === p.id) { delete e.photo; hit = true; }
+    if (hit) await db.put('projects', parent);
+  }
+  await db.deleteProject(p);
 }
 
 async function projectMenu(p, f) {
@@ -363,7 +389,7 @@ async function projectMenu(p, f) {
     route();
   } else if (v === 'delete') {
     if (await confirmBox('Usunąć pomiar?', `„${p.name}” zniknie z tego urządzenia.`)) {
-      await db.deleteProject(p);
+      await removeProject(p);
       route();
     }
   }
@@ -383,6 +409,7 @@ async function showProject(id) {
   if (!p) return go('#/');
   const f = await db.get('folders', p.folderId);
   const image = p.imageId ? await loadProjectImage(p) : null;
+  const parent = p.parent ? await db.get('projects', p.parent) : null; // Plan of a wall photo.
 
   const tools = [
     ['hand', 'Przesuń', ICON.hand],
@@ -424,7 +451,7 @@ async function showProject(id) {
   const panel = app.querySelector('[data-panel]');
   window.dalmierzEditor = ed; // Debug handle for console and tests.
 
-  let saveTimer = null, thumbTimer = null;
+  let saveTimer = null, thumbTimer = null, deleted = false;
   const save = async () => {
     p.updatedAt = Date.now();
     await db.put('projects', p);
@@ -520,7 +547,32 @@ async function showProject(id) {
 
   app.querySelector('[data-fit]').onclick = () => ed.fit();
   app.querySelector('[data-list]').onclick = () => showEdgeList(ed);
-  app.querySelector('[data-back]').onclick = () => go(`#/f/${p.folderId}`);
+  // Wall photo opened from its plan: back goes to the plan.
+  app.querySelector('[data-back]').onclick = () => go(parent && prevHash === `#/p/${parent.id}` ? prevHash : `#/f/${p.folderId}`);
+  ed.addEventListener('open-photo', (e) => openWallPhoto(e.detail.id));
+
+  // Open the wall photo. Link to a deleted project: remove it.
+  const openWallPhoto = async (id) => {
+    if (await db.get('projects', id)) return go(`#/p/${id}`);
+    for (const s of p.shapes) for (let i = 0; i < (s.edges || []).length; i++) if (s.edges[i].photo === id) ed.setWallPhoto(s, i, null);
+    toast('Zdjęcie ściany zostało usunięte', 'err');
+  };
+
+  // Take a photo of the selected wall. New photo project, linked both ways.
+  const addWallPhoto = async (s) => {
+    const src = await menu('Zdjęcie ściany', [
+      { label: 'Zrób zdjęcie', value: 'camera', icon: ICON.camera, hint: 'Potem zaznacz na nim wymiary' },
+      { label: 'Zdjęcie z galerii', value: 'gallery', icon: ICON.image },
+    ]);
+    if (!src) return;
+    const photo = await takePhoto(src === 'camera');
+    if (!photo) return;
+    const ph = await addProject(f, `${p.name} – ${edgeLabel(s.shape, s.edge)}`, photo, { parent: p.id });
+    ed.setWallPhoto(s.shape, s.edge, ph.id);
+    clearTimeout(saveTimer);
+    await save();
+    go(`#/p/${ph.id}`);
+  };
   app.querySelector('[data-rename]').onclick = async () => {
     const name = await ask('Nazwa pomiaru', p.name, { suggestions: NAME_HINTS });
     if (name) { p.name = name; app.querySelector('[data-rename]').textContent = name; save(); }
@@ -536,7 +588,10 @@ async function showProject(id) {
     if (v === 'list') showEdgeList(ed);
     if (v === 'unit') { await chooseUnit(); ed.draw(); renderPanel(); }
     if (v === 'delete' && (await confirmBox('Usunąć pomiar?', `„${p.name}” zniknie z tego urządzenia.`))) {
-      await db.deleteProject(p);
+      deleted = true; // Cleanup must not save it again.
+      clearTimeout(saveTimer);
+      clearTimeout(thumbTimer);
+      await removeProject(p);
       go(`#/f/${p.folderId}`);
     }
   };
@@ -591,9 +646,11 @@ async function showProject(id) {
             <b>${e.v ? fmt(e.v, settings.unit) : '—'}<i>${settings.unit}</i></b>
           </button>
           <div class="p-hint ${live ? 'live' : ''}">${live ? '<span class="pulse"></span>Naciśnij pomiar na dalmierzu' : 'Stuknij wartość, aby wpisać, albo połącz dalmierz'}</div>
+          ${!ed.photo && s.shape.style !== 'dim' ? `<button class="cam-btn ${e.photo ? 'on' : ''}" data-wall-photo aria-label="Zdjęcie ściany">${ICON.camera}<small>${e.photo ? 'Zdjęcie' : '+ Zdjęcie'}</small></button>` : ''}
         </div>
         <div class="p-actions">
           ${readChips}
+          ${parent ? `<button class="chip" data-parent>↩ Rzut</button>` : ''}
           ${!ed.photo && s.shape.style !== 'dim' ? '<button class="chip" data-add-mark>+ Punkt</button>' : ''}
           <button class="chip" data-edge-name>${e.name ? '✎ Nazwa' : '+ Nazwa'}</button>
           ${!ed.photo && edgeCount(s.shape) > 1 ? `<button class="chip" data-shape-name>${s.shape.name ? esc(s.shape.name) : '+ Nazwa kształtu'}</button>` : ''}
@@ -611,7 +668,8 @@ async function showProject(id) {
         text: 'Stuknij w miejsce na rysunku, aby dodać notatkę.',
       };
       const recent = readings.slice(0, 4);
-      html = `<p class="p-tip">${hints[ed.tool]} Dwa palce: przesuń i powiększ.</p>
+      html = `${parent ? `<div class="p-actions top"><button class="chip" data-parent>↩ Rzut: ${esc(parent.name)}</button></div>` : ''}
+        <p class="p-tip">${hints[ed.tool]} Dwa palce: przesuń i powiększ.</p>
         ${recent.length ? `<div class="p-actions"><small class="muted">Odczyty:</small>${recent.map((r) => `<span class="chip ghost">${fmt(r.mm, settings.unit, true)}</span>`).join('')}</div>` : ''}`;
     }
     panel.innerHTML = html;
@@ -630,6 +688,12 @@ async function showProject(id) {
       const k = await chooseMarkKind('Punkt na ścianie');
       if (k) ed.addMark(k);
     });
+    panel.querySelector('[data-wall-photo]')?.addEventListener('click', () => {
+      const id = s.shape.edges[s.edge].photo;
+      if (id) openWallPhoto(id);
+      else addWallPhoto(s);
+    });
+    panel.querySelector('[data-parent]')?.addEventListener('click', () => go(`#/p/${parent.id}`));
     panel.querySelector('[data-flip]')?.addEventListener('click', () => ed.flipMark());
     panel.querySelector('[data-mark-kind]')?.addEventListener('click', async () => {
       const k = await chooseMarkKind('Typ punktu');
@@ -692,6 +756,7 @@ async function showProject(id) {
       ed.destroy();
       lock?.release?.().catch(() => {});
       lock = null;
+      if (deleted) return;
       // Save last state and thumb. No wait: next screen loads in parallel.
       p.updatedAt = Date.now();
       makeThumb(p, image).then((t) => { p.thumb = t; }).catch(() => {}).finally(() => db.put('projects', p));

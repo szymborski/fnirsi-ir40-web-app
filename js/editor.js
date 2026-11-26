@@ -98,7 +98,7 @@ export class Editor extends EventTarget {
 
   renderOpts(extra = {}) {
     return {
-      ui: 1, unit: this.settings.unit, photo: this.photo, image: this.image,
+      ui: 1, unit: this.settings.unit, photo: this.photo, image: this.image, links: true,
       sel: this.sel, showArea: !this.photo, guides: this.g?.guides, snapPoint: this.g?.snapKind === 'vertex' ? this.g.cur : null,
       ...extra,
     };
@@ -112,7 +112,7 @@ export class Editor extends EventTarget {
   paint() {
     const ctx = this.ctx;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    render(ctx, this.w, this.h, this.sceneShapes(), this.view, this.renderOpts());
+    this.targets = render(ctx, this.w, this.h, this.sceneShapes(), this.view, this.renderOpts());
     this.paintLoupe();
   }
 
@@ -128,7 +128,7 @@ export class Editor extends EventTarget {
     const v = { scale, ox: size / 2 - g.cur[0] * scale, oy: size / 2 - g.cur[1] * scale };
     const c = this.lctx;
     c.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    render(c, size, size, this.sceneShapes(), v, this.renderOpts({ ui: 0.9 }));
+    render(c, size, size, this.sceneShapes(), v, this.renderOpts({ ui: 0.9, links: false }));
     c.strokeStyle = '#ff375f';
     c.lineWidth = 1.5;
     c.beginPath();
@@ -266,6 +266,15 @@ export class Editor extends EventTarget {
   selectMark(m, field) {
     const fs = kindOf(m).fields;
     this.select({ id: m.id, mark: m.id, field: field || fs.find((f) => m[f] == null) || fs[0] });
+  }
+
+  // Link a wall photo project to the selected edge (id) or remove the link (null).
+  setWallPhoto(shape, edge, id) {
+    this.snapshot();
+    if (id) shape.edges[edge].photo = id;
+    else delete shape.edges[edge].photo;
+    this.changed();
+    this.emitSelect();
   }
 
   updateMark(fn) {
@@ -657,6 +666,12 @@ export class Editor extends EventTarget {
   }
 
   tap(g) {
+    // Wall photo button on the drawing.
+    const t = this.targets?.find((x) => dist(g.down, [x.x, x.y]) < x.r + 6);
+    if (t) {
+      this.dispatchEvent(new CustomEvent('open-photo', { detail: { id: t.photo } }));
+      return;
+    }
     const hit = g.hit;
     if (this.tool === 'text' && !hit) {
       this.dispatchEvent(new CustomEvent('ask-text', { detail: { point: g.wdown } }));

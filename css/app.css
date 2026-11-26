@@ -134,6 +134,10 @@ small { display: block; color: var(--muted); font-size: 13px; }
 .p-tip.small { font-size: 13px; margin-top: 6px; }
 .m-sym { width: 30px; height: 30px; border-radius: 50%; color: #fff; font-weight: 800; font-size: 13px; display: grid; place-items: center; flex: none; }
 .m-sym.span { border-radius: 6px; height: 14px; }
+.cam-btn { flex: none; width: 64px; height: 56px; border-radius: 12px; background: #eef1f5; color: var(--muted); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; }
+.cam-btn small { font-size: 10.5px; font-weight: 600; color: inherit; }
+.cam-btn.on { background: var(--accent); color: #fff; }
+.p-actions.top { margin: 0 0 6px; }
 .chip.okc { background: #e3f7e8; color: #157f3b; font-weight: 600; }
 
 .toolbar {

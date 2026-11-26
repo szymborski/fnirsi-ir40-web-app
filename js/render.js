@@ -12,8 +12,11 @@ const C = {
 };
 
 // view = { scale, ox, oy }  screen = world * scale + o
-// opt = { ui (px multiplier), unit, photo (bool), image, sel: {id, edge}, grid, guides, draft, showArea }
+// opt = { ui (px multiplier), unit, photo (bool), image, sel: {id, edge}, grid, guides, draft, showArea,
+//         links (bool: draw wall photo buttons) }
+// Return tap targets in screen px: [{ x, y, r, photo: projectId }].
 export function render(ctx, w, h, shapes, view, opt) {
+  const targets = [];
   const ui = opt.ui || 1;
   const S = (p) => [p[0] * view.scale + view.ox, p[1] * view.scale + view.oy];
   ctx.save();
@@ -67,7 +70,7 @@ export function render(ctx, w, h, shapes, view, opt) {
       const bad = !!(e.v && rectMismatch(s, i)); // Opposite wall of a rectangle differs.
       const text = e.v ? `${bad ? '⚠ ' : ''}${fmt(e.v, opt.unit)}` : edgeSel ? '…' : '?';
       const sub = e.name || '';
-      labels.push({ a: sa, b: sb, text, sub, missing: !e.v, sel: edgeSel, outward, isDim, bad });
+      labels.push({ a: sa, b: sb, text, sub, missing: !e.v, sel: edgeSel, outward, isDim, bad, wallPhoto: opt.links ? e.photo : null });
     }
     if (!s.draft) for (let i = 0; i < edgeCount(s); i++) if (marksOf(s, i).length) marks.push([s, i]);
 
@@ -101,7 +104,7 @@ export function render(ctx, w, h, shapes, view, opt) {
     }
   }
 
-  for (const L of labels) drawEdgeLabel(ctx, L, ui, opt.photo);
+  for (const L of labels) drawEdgeLabel(ctx, L, ui, opt.photo, targets);
   for (const [s, i] of marks) drawEdgeMarks(ctx, s, i, S, opt, ui);
 
   for (const s of shapes) {
@@ -127,6 +130,7 @@ export function render(ctx, w, h, shapes, view, opt) {
     ctx.stroke();
   }
   ctx.restore();
+  return targets;
 }
 
 // Wall marks of one edge. Running dimensions from the corner: one dashed line per corner,
@@ -278,7 +282,7 @@ function drawTick(ctx, pts, i, color, ui) {
   line(ctx, [p[0] - nx * k, p[1] - ny * k], [p[0] + nx * k, p[1] + ny * k], 2.5 * ui, color);
 }
 
-function drawEdgeLabel(ctx, L, ui, photo) {
+function drawEdgeLabel(ctx, L, ui, photo, targets) {
   const { a, b } = L;
   let ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
   let nx = -(b[1] - a[1]), ny = b[0] - a[0];
@@ -291,7 +295,14 @@ function drawEdgeLabel(ctx, L, ui, photo) {
   const x = m[0] + nx * off, y = m[1] + ny * off;
   const bg = L.sel ? C.sel : L.missing ? C.missingBg : L.bad ? C.bad : photo ? 'rgba(0,0,0,0.75)' : C.labelBg;
   const size = L.missing && !L.sel ? 12 : 14;
-  pill(ctx, x, y, L.text, ang, ui, bg, C.label, size, true);
+  const w = pill(ctx, x, y, L.text, ang, ui, bg, C.label, size, true);
+  // Wall photo: camera button after the value pill. Tap opens the photo.
+  if (L.wallPhoto) {
+    const k = w / 2 + 17 * ui;
+    const cx = x + Math.cos(ang) * k, cy = y + Math.sin(ang) * k;
+    drawCamera(ctx, cx, cy, ui);
+    targets.push({ x: cx, y: cy, r: 16 * ui, photo: L.wallPhoto });
+  }
   if (L.sub) {
     const k = -22 * ui; // Name pill sits beside the value pill, not on it.
     const sx = x - Math.sin(ang) * k, sy = y + Math.cos(ang) * k;
@@ -317,6 +328,31 @@ function pill(ctx, x, y, text, ang, ui, bg, fg, size, bold, shadow) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, 0, 0.5 * ui);
+  ctx.restore();
+  return w;
+}
+
+function drawCamera(ctx, x, y, ui) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.shadowColor = 'rgba(0,0,0,0.2)';
+  ctx.shadowBlur = 5 * ui;
+  ctx.beginPath();
+  ctx.arc(0, 0, 13 * ui, 0, Math.PI * 2);
+  ctx.fillStyle = '#0a84ff';
+  ctx.fill();
+  ctx.shadowColor = 'transparent';
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1.6 * ui;
+  ctx.lineJoin = 'round';
+  roundRect(ctx, -7 * ui, -4 * ui, 14 * ui, 10 * ui, 2 * ui);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-3 * ui, -4 * ui); ctx.lineTo(-2 * ui, -6.5 * ui); ctx.lineTo(2 * ui, -6.5 * ui); ctx.lineTo(3 * ui, -4 * ui);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(0, 1 * ui, 2.6 * ui, 0, Math.PI * 2);
+  ctx.stroke();
   ctx.restore();
 }
 

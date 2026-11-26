@@ -12,6 +12,7 @@ export async function seedDemo() {
   const f = { id: db.uid(), name: 'Mieszkanie ul. Przykładowa 7', demo: true, createdAt: now, updatedAt: now };
   await db.put('folders', f);
 
+  const wallPhotoId = db.uid(); // Photo of the window wall, linked to kitchen edge 0.
   // L-shaped kitchen with wall marks (window, socket, water, drain, door) and a note.
   const kitchen = {
     id: db.uid(), folderId: f.id, name: 'Kuchnia', kind: 'sketch', createdAt: now, updatedAt: now - 1000, thumb: null,
@@ -20,7 +21,7 @@ export async function seedDemo() {
         id: db.uid(), type: 'poly', style: 'wall', closed: true, name: 'Kuchnia',
         pts: [[0, 0], [3600, 0], [3600, 2400], [2000, 2400], [2000, 3400], [0, 3400]],
         edges: [
-          E(3612, 'ściana z oknem', [M('window', { d: 980, w: 1450, z: 850, h: 1320 })]),
+          { ...E(3612, 'ściana z oknem', [M('window', { d: 980, w: 1450, z: 850, h: 1320 })]), photo: wallPhotoId },
           E(2405, '', [M('socket', { d: 450, z: 1100 }), M('water', { d: 1250, z: 520 }), M('drain', { d: 1380, z: 300 })]),
           E(1598), E(1010),
           E(2010, '', [M('door', { d: 700, w: 900 })]),
@@ -47,7 +48,7 @@ export async function seedDemo() {
   const imageId = db.uid();
   await db.put('images', { id: imageId, blob });
   await db.put('projects', {
-    id: db.uid(), folderId: f.id, name: 'Ściana z oknem', kind: 'photo', imageId, imageW: width, imageH: height,
+    id: wallPhotoId, folderId: f.id, name: 'Kuchnia – ściana z oknem', kind: 'photo', imageId, imageW: width, imageH: height, parent: kitchen.id,
     createdAt: now, updatedAt: now, thumb: null,
     shapes: [
       { id: db.uid(), type: 'poly', style: 'dim', closed: false, pts: [[560, 330], [1240, 330]], edges: [E(1450, 'Szerokość okna')] },

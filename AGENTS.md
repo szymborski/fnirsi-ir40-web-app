@@ -43,6 +43,8 @@ Static PWA, vanilla ES modules, no build step, no backend. Hosted on GitHub Page
 - `setPointerCapture` throws for synthetic `PointerEvent`s (tests). It is wrapped in try/catch.
 - Data model: world units = mm (sketch) or image px (photo). Edge values are stored in mm (`shape.edges[i].v`). Rectangle check (`rectPairs`): 4 corners within ~10° of 90°, opposite walls differ > `RECT_TOL` (10 mm). Area uses measured lengths + drawn directions (`geometry.rebuild`), so the drawing scale does not matter.
 - Wall marks (socket, window, …) are in `shape.edges[i].marks`, not in `shapes`. So edge split, close and undo carry them. Position = `d` (mm from corner `from`) scaled by the measured wall length (`markGeom`). Unmeasured: `t` (0..1).
+- Wall photo: plan edge has `photo` (photo project id), photo project has `parent` (plan id). Backup keeps ids, so links survive import. `removeProject()` removes the link from the plan. `render()` returns tap targets for the camera button.
+- Editor cleanup saves the project. After delete set `deleted = true`, or cleanup writes the deleted project back.
 - Selection: edge `{ id, edge }`, wall mark `{ id: mark.id, mark: mark.id, field }`. Use `ed.selected()`, not `ed.sel`, to read it.
 - Auto-advance from a mark goes to the next empty field of the same mark, then to the next unmeasured wall. Optional mark fields never pull the flow back.
 - A reading is marked `used` before `put()`: the panel renders inside `put()` and must not offer the same reading as "Wstaw".

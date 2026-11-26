@@ -60,7 +60,7 @@ try {
   await evaluate(`(() => { const ed = window.dalmierzEditor; ed.select({ id: ed.shapes[0].id, edge: 0 }); })()`);
   await shot('3-rysunek');
 
-  await evaluate(`location.hash = '#/p/${ids.projects['Ściana z oknem']}'`);
+  await evaluate(`location.hash = '#/p/${ids.projects['Kuchnia – ściana z oknem']}'`);
   await shot('4-zdjecie');
   ws.close();
 } finally {
