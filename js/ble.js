@@ -65,18 +65,7 @@ export class IR40 extends EventTarget {
     if (!IR40.supported) throw new Error('Ta przeglądarka nie obsługuje Web Bluetooth');
     this.setState('connecting');
     try {
-      let device;
-      try {
-        device = await navigator.bluetooth.requestDevice({
-          filters: [{ namePrefix: 'fnirsi' }, { services: [SERVICE] }],
-          optionalServices: [SERVICE],
-        });
-      } catch (e) {
-        // User closed the chooser or no device: stop. Other rejection: try a simpler filter once.
-        if (e?.name === 'NotFoundError' || e?.name === 'AbortError') throw e;
-        this.addLog(`requestDevice #1: ${errorText(e)}`);
-        device = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: 'fnirsi' }], optionalServices: [SERVICE] });
-      }
+      const device = await this.requestDevice();
       this.attach(device);
       await this.openGatt();
     } catch (e) {
@@ -84,6 +73,41 @@ export class IR40 extends EventTarget {
       if (e?.name !== 'NotFoundError' && e?.name !== 'AbortError') this.addLog(`connect: ${errorText(e)}`);
       throw e;
     }
+  }
+
+  // Option sets, from best to most simple. Bluefy (iOS) rejects some sets with
+  // "request payload could not be parsed" before it shows the chooser. Then try the next set.
+  // The last sets show all devices: the user picks "fnirsi.etool.40mpro".
+  static get OPTION_SETS() {
+    return [
+      { filters: [{ namePrefix: 'fnirsi' }], optionalServices: [SERVICE] },
+      { filters: [{ namePrefix: 'fnirsi' }], optionalServices: [SERVICE], acceptAllDevices: false },
+      { acceptAllDevices: true, optionalServices: [SERVICE] },
+      { acceptAllDevices: true },
+    ];
+  }
+
+  // Try option sets in order. Start with the set that worked last time.
+  async requestDevice() {
+    const sets = IR40.OPTION_SETS;
+    const saved = Number(localStorage.getItem('ble-option-set'));
+    const order = sets.map((_, i) => i);
+    if (saved > 0 && saved < sets.length) order.unshift(...order.splice(saved, 1));
+    let last;
+    for (const i of order) {
+      try {
+        const device = await navigator.bluetooth.requestDevice(sets[i]);
+        localStorage.setItem('ble-option-set', String(i));
+        this.addLog(`requestDevice: wariant ${i + 1} OK`);
+        return device;
+      } catch (e) {
+        // User closed the chooser or no device found: stop here.
+        if (e?.name === 'NotFoundError' || e?.name === 'AbortError') throw e;
+        this.addLog(`requestDevice: wariant ${i + 1}: ${errorText(e)}`);
+        last = e;
+      }
+    }
+    throw last;
   }
 
   addLog(text) {
