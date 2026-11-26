@@ -30,7 +30,7 @@ Static PWA, vanilla ES modules, no build step, no backend. Hosted on GitHub Page
 ## Non-obvious problems
 
 - **iOS**: Safari (and Chrome/Edge on iOS) has no Web Bluetooth. Use Bluefy (free, has `getDevices()`) or the beacio Safari extension (iOS 26.2+, not tested).
-- **Bluefy rejects `requestDevice` options it cannot parse**: rejection in < 0.1 s, before the chooser, with a non-Error value (`requestDevice request payload could not be parsed`). Numeric UUIDs (`0xEE01`) cause it. Full 128-bit UUID strings alone did not fix it on iPhone. `IR40.requestDevice()` tries option sets in order (name filter → `acceptAllDevices`), logs each failure to Log Bluetooth and saves the working set in `localStorage['ble-option-set']`. Which set works in Bluefy: NOT confirmed yet.
+- **Bluefy (iOS)**: confirmed working options: `{ filters: [{ namePrefix: 'fnirsi' }], optionalServices: ['0000ee01-0000-1000-8000-00805f9b34fb'] }`. Numeric UUIDs (`0xEE01`) make Bluefy reject the call in < 0.1 s, before the chooser, with a non-Error value (`requestDevice request payload could not be parsed`). Chrome accepts numbers. Use 128-bit UUID strings everywhere and show rejections with `errorText()`.
 - `requestDevice` needs a user gesture. After the first pick, `reconnectKnown()` uses `navigator.bluetooth.getDevices()` when the browser has it.
 - After reconnect, `getCharacteristic` can return the same object. Keep the same listener reference (`this.onValue`), or each reading fires twice.
 - **macOS**: a process without Bluetooth permission (TCC) dies with SIGABRT (exit 134) on scan, for example in a sandboxed shell. Run the sniffer from a terminal app that has Bluetooth permission. A short scan can miss the device name: scan 12 s and read `adv.local_name`.
