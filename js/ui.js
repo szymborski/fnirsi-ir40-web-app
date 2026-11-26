@@ -10,16 +10,22 @@ export function h(html) {
 }
 
 let toastTimer;
-export function toast(text, kind = '') {
+// action = { label, run }: button in the toast (for example "Cofnij"). It stays longer.
+export function toast(text, kind = '', { action, ms } = {}) {
   let el = $('#toast');
   if (!el) {
     el = h('<div id="toast" role="status"></div>');
     document.body.append(el);
   }
-  el.textContent = text;
-  el.className = `show ${kind}`;
+  el.innerHTML = `<span>${esc(text)}</span>`;
+  if (action) {
+    const b = h(`<button type="button" class="toast-btn">${esc(action.label)}</button>`);
+    b.onclick = () => { el.className = ''; clearTimeout(toastTimer); action.run(); };
+    el.append(b);
+  }
+  el.className = `show ${kind} ${action ? 'has-action' : ''}`;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (el.className = ''), 2400);
+  toastTimer = setTimeout(() => (el.className = ''), ms || (action ? 5000 : 2400));
 }
 
 // Bottom sheet modal. Return { el, close }. onClose runs once.

@@ -13,9 +13,10 @@ export function fmt(mm, unit = 'mm', withUnit = false) {
 }
 
 // Parse user text in the given unit. Accept comma or dot. Return mm or null.
-export function parse(text, unit = 'mm') {
+// zero: accept 0 (for example a pipe at floor level).
+export function parse(text, unit = 'mm', { zero = false } = {}) {
   const v = parseFloat(String(text).replace(/\s/g, '').replace(',', '.'));
-  if (!Number.isFinite(v) || v <= 0) return null;
+  if (!Number.isFinite(v) || v < 0 || (v === 0 && !zero)) return null;
   if (unit === 'cm') return Math.round(v * 10);
   if (unit === 'm') return Math.round(v * 1000);
   return Math.round(v);

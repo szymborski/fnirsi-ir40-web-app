@@ -3,18 +3,19 @@ import * as db from './db.js';
 import { ir40, IR40, MODE, errorText } from './ble.js';
 import { Editor } from './editor.js';
 import { render, fitView } from './render.js';
-import { bounds, edgeCount, polyMetrics } from './geometry.js';
+import { bounds, edgeCount, polyMetrics, rectPairs, rectMismatch, marksOf, RECT_TOL } from './geometry.js';
+import { MARK_KINDS, kindOf, fieldLabel, markName } from './marks.js';
 import { fmt, fmtArea, fmtDate, parse, esc } from './format.js';
 import { importPhoto, pickPhoto, blobToImage, toBlob } from './image.js';
 import { exportBackup, importBackup, pickFile } from './backup.js';
 import { $, h, toast, ask, confirmBox, menu, sheet, beep, shareFile } from './ui.js';
 import { seedDemo } from './demo.js';
 
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION = '1.1.0';
 
 const app = $('#app');
 const settings = { unit: 'mm', sound: true, sim: false };
-const readings = []; // last readings: { mm, t }
+const readings = []; // last readings: { mm, t, used }
 let screen = null; // { name, cleanup, onMeasure }
 let urls = []; // object URLs to free on screen change
 
@@ -39,13 +40,14 @@ const ICON = {
   camera: '<svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>',
   image: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="M21 16l-5-5-8 8"/></svg>',
   sketch: '<svg viewBox="0 0 24 24"><path d="M4 4h10v6h6v10H4z"/></svg>',
+  trash: '<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg>',
   list: '<svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01" stroke-width="2.4"/></svg>',
 };
 
 // ---------- boot ----------
 async function boot() {
   Object.assign(settings, await db.getSetting('settings', {}));
-  ir40.addEventListener('state', updateBleUi);
+  ir40.addEventListener('state', onBleState);
   ir40.addEventListener('measure', (e) => onMeasure(e.detail));
   window.addEventListener('hashchange', route);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) wakeLock(); });
@@ -99,6 +101,23 @@ function updateBleUi() {
   });
 }
 
+// Tell the user when the link drops. They look at the laser dot, not at the screen.
+let bleWas = 'disconnected', bleLost = false;
+function onBleState() {
+  const st = ir40.state;
+  if (bleWas === 'connected' && st === 'disconnected' && !ir40.manualDisconnect) {
+    bleLost = true;
+    toast('Dalmierz rozłączony. Łączę ponownie…', 'warn');
+    if (settings.sound) beep(440, 220);
+  } else if (st === 'connected' && bleLost) {
+    bleLost = false;
+    toast('Dalmierz połączony', 'ok');
+  }
+  if (st === 'disconnected' && ir40.manualDisconnect) bleLost = false;
+  bleWas = st;
+  updateBleUi();
+}
+
 async function onBleTap() {
   if (settings.sim) {
     const v = await menu('Tryb testowy', [
@@ -142,11 +161,13 @@ function showNoBle() {
 function onMeasure({ mode, mm, unit }) {
   if (mode !== MODE.LINEAR || !mm) return; // Only length mode. 0 = no valid reading.
   if (unit !== 0) toast('Ustaw jednostkę „m” na dalmierzu', 'err');
-  readings.unshift({ mm, t: Date.now() });
+  // used = true before put: the panel renders during put and must not offer this reading again.
+  const r = { mm, t: Date.now(), used: true };
+  readings.unshift(r);
   readings.length = Math.min(readings.length, 8);
   if (settings.sound) beep();
   updateBleUi();
-  if (screen?.onMeasure) screen.onMeasure(mm);
+  if (screen?.onMeasure) r.used = screen.onMeasure(mm);
   else toast(`Odczyt ${fmt(mm, settings.unit, true)}. Otwórz pomiar, aby go wstawić.`);
 }
 
@@ -433,14 +454,44 @@ async function showProject(id) {
 
   const editValue = async () => {
     const s = ed.selected();
-    if (!s || s.edge == null) return;
-    const cur = s.shape.edges[s.edge].v;
-    const txt = await ask(`Wymiar (${settings.unit})`, cur ? fmt(cur, settings.unit) : '', { inputmode: 'decimal', placeholder: settings.unit === 'mm' ? 'np. 2435' : '' });
+    if (!s || (s.edge == null && !s.mark)) return;
+    const cur = ed.selectedValue();
+    const title = s.mark ? `${markName(s.mark)}: ${fieldLabel(s.mark, s.field).toLowerCase()}` : 'Wymiar';
+    const txt = await ask(`${title} (${settings.unit})`, cur != null ? fmt(cur, settings.unit) : '', { inputmode: 'decimal', placeholder: settings.unit === 'mm' ? 'np. 2435' : '' });
     if (txt == null) return;
-    const mm = parse(txt, settings.unit);
-    if (!mm) return toast('Niepoprawna wartość', 'err');
+    const mm = parse(txt, settings.unit, { zero: !!s.mark });
+    if (mm == null) return toast('Niepoprawna wartość', 'err');
+    put(mm);
+  };
+
+  const edgeLabel = (shape, i) => shape.edges[i]?.name || `Odcinek ${ed.allEdges().findIndex((x) => x.shape === shape && x.edge === i) + 1}`;
+  const targetLabel = (s) => (s.mark ? `${markName(s.mark)}, ${fieldLabel(s.mark, s.field).toLowerCase()}` : edgeLabel(s.shape, s.edge));
+
+  // Put a value in the selected edge or mark field and go to the next one.
+  // Toast has "Cofnij": old value back and the same target selected again, so the next reading goes there.
+  // Return false when nothing is selected.
+  const put = (mm) => {
+    const s = ed.selected();
+    if (!s || (s.edge == null && !s.mark)) return false;
+    const before = { sel: { ...ed.sel }, value: ed.selectedValue(), label: targetLabel(s) };
     const r = ed.setValue(mm, { advance: true });
-    if (r === 'done') toast('Wszystkie odcinki zmierzone ✓', 'ok');
+    const bad = s.edge != null ? rectMismatch(s.shape, s.edge) : null;
+    const v = fmt(mm, settings.unit, true);
+    const undo = {
+      label: 'Cofnij',
+      run: () => {
+        ed.select(before.sel);
+        ed.setValue(before.value);
+        toast(`${before.label}: zmierz jeszcze raz`);
+      },
+    };
+    if (bad) {
+      toast(`⚠ ${before.label}: ${v}. Ściana naprzeciw różni się o ${fmt(bad.diff, settings.unit, true)}`, 'warn', { action: undo, ms: 7000 });
+      if (settings.sound) setTimeout(() => beep(520, 180), 160);
+    } else {
+      toast(`✓ ${before.label}: ${v}${r === 'done' ? '. Wszystko zmierzone' : ''}`, 'ok', { action: undo });
+    }
+    return true;
   };
 
   const setTool = (t) => {
@@ -504,7 +555,29 @@ async function showProject(id) {
     const s = ed.selected();
     const live = settings.sim || ir40.state === 'connected';
     let html = '';
-    if (s && s.shape.type === 'text') {
+    // Readings that came when nothing was selected. Tap to put one in.
+    const fresh = readings.filter((r) => !r.used && Date.now() - r.t < 10 * 60e3).slice(0, 2);
+    const readChips = (s && (s.edge != null || s.mark)) ? fresh.map((r) => `<button class="chip okc" data-read="${readings.indexOf(r)}">Wstaw ${fmt(r.mm, settings.unit, true)}</button>`).join('') : '';
+    if (s && s.mark) {
+      const K = kindOf(s.mark);
+      const fl = fieldLabel(s.mark, s.field).toLowerCase();
+      html = `
+        <div class="p-row">
+          <span class="m-sym" style="background:${K.color}">${K.sym || ''}</span>
+          <div class="p-main"><small class="muted">${esc(edgeLabel(s.shape, s.markEdge))}</small><b>${esc(markName(s.mark))}</b></div>
+          <div class="p-hint ${live ? 'live' : ''}">${live ? `<span class="pulse"></span>Zmierz: ${esc(fl)}` : 'Stuknij pole, aby wpisać'}</div>
+        </div>
+        <div class="p-fields">${K.fields.map((f) => `<button class="p-field ${f === s.field ? 'on' : ''} ${s.mark[f] == null ? 'missing' : ''}" data-field="${f}">
+          <small>${esc(fieldLabel(s.mark, f))}</small><b>${s.mark[f] != null ? fmt(s.mark[f], settings.unit) : '—'}</b></button>`).join('')}</div>
+        ${s.field === 'd' ? '<p class="p-tip small">Mierz od narożnika, z którego idzie przerywana linia.</p>' : ''}
+        <div class="p-actions">
+          ${readChips}
+          <button class="chip" data-flip>⇄ Drugi narożnik</button>
+          <button class="chip" data-mark-kind>Typ</button>
+          <button class="chip" data-mark-name>${s.mark.name ? '✎ Nazwa' : '+ Nazwa'}</button>
+          <button class="chip danger" data-del>Usuń</button>
+        </div>`;
+    } else if (s && s.shape.type === 'text') {
       html = `<div class="p-row"><div class="p-main"><small>Notatka</small><b>${esc(s.shape.text)}</b></div>
         <button class="btn ghost" data-edit-text>Edytuj</button><button class="btn ghost danger" data-del>Usuń</button></div>`;
     } else if (s && s.edge != null) {
@@ -520,13 +593,15 @@ async function showProject(id) {
           <div class="p-hint ${live ? 'live' : ''}">${live ? '<span class="pulse"></span>Naciśnij pomiar na dalmierzu' : 'Stuknij wartość, aby wpisać, albo połącz dalmierz'}</div>
         </div>
         <div class="p-actions">
-          <button class="chip" data-edge-name>${e.name ? 'Zmień nazwę' : '+ Nazwa'}</button>
+          ${readChips}
+          ${!ed.photo && s.shape.style !== 'dim' ? '<button class="chip" data-add-mark>+ Punkt</button>' : ''}
+          <button class="chip" data-edge-name>${e.name ? '✎ Nazwa' : '+ Nazwa'}</button>
           ${!ed.photo && edgeCount(s.shape) > 1 ? `<button class="chip" data-shape-name>${s.shape.name ? esc(s.shape.name) : '+ Nazwa kształtu'}</button>` : ''}
-          ${!ed.photo && edgeCount(s.shape) > 1 ? '<button class="chip" data-fitshape>Dopasuj kształt</button>' : ''}
-          <button class="chip danger" data-delmenu aria-label="Usuń">Usuń…</button>
+          ${!ed.photo && edgeCount(s.shape) > 1 ? '<button class="chip" data-fitshape>Dopasuj</button>' : ''}
+          <button class="chip danger icon" data-delmenu aria-label="Usuń">${ICON.trash}</button>
         </div>
         ${m ? `<div class="p-metrics">Pole <b>${m.approx ? '≈ ' : ''}${fmtArea(m.area)}</b> · Obwód <b>${fmt(m.perimeter, settings.unit, true)}</b>
-          ${!m.approx && m.gap > Math.max(10, m.perimeter * 0.005) ? `<span class="warn">⚠ Wymiary nie domykają się o ${fmt(m.gap, settings.unit, true)}. Sprawdź kąty.</span>` : ''}</div>` : ''}`;
+          ${warnings(s.shape, m)}</div>` : ''}`;
     } else {
       const hints = {
         hand: 'Przeciągnij, aby przesunąć widok. Zaznacz kształt, potem przeciągnij go albo jego punkt.',
@@ -541,6 +616,29 @@ async function showProject(id) {
     }
     panel.innerHTML = html;
     panel.querySelector('[data-value]')?.addEventListener('click', editValue);
+    panel.querySelectorAll('[data-read]').forEach((b) => b.addEventListener('click', () => {
+      const r = readings[+b.dataset.read];
+      if (!r) return;
+      r.used = true;
+      if (!put(r.mm)) r.used = false;
+    }));
+    panel.querySelectorAll('[data-field]').forEach((b) => b.addEventListener('click', () => {
+      if (b.dataset.field === s.field) editValue();
+      else ed.selectMark(s.mark, b.dataset.field);
+    }));
+    panel.querySelector('[data-add-mark]')?.addEventListener('click', async () => {
+      const k = await chooseMarkKind('Punkt na ścianie');
+      if (k) ed.addMark(k);
+    });
+    panel.querySelector('[data-flip]')?.addEventListener('click', () => ed.flipMark());
+    panel.querySelector('[data-mark-kind]')?.addEventListener('click', async () => {
+      const k = await chooseMarkKind('Typ punktu');
+      if (k) ed.updateMark((mk) => { mk.kind = k; });
+    });
+    panel.querySelector('[data-mark-name]')?.addEventListener('click', async () => {
+      const n = await ask('Nazwa punktu', s.mark.name || '', { placeholder: 'np. okap, zmywarka, gniazdko podwójne', suggestions: ['Okap', 'Zmywarka', 'Lodówka', 'Płyta', 'Piekarnik', 'Podwójne'] });
+      if (n != null) ed.updateMark((mk) => { mk.name = n; });
+    });
     panel.querySelector('[data-del]')?.addEventListener('click', () => ed.deleteSelection());
     panel.querySelector('[data-delmenu]')?.addEventListener('click', async () => {
       const multi = edgeCount(s.shape) > 1;
@@ -569,18 +667,24 @@ async function showProject(id) {
     requestAnimationFrame(() => ed.resize());
   }
 
+  // Warnings for a closed shape. Rectangle: compare opposite walls. Other shapes: closure gap.
+  function warnings(shape, m) {
+    const pairs = rectPairs(shape);
+    if (pairs) {
+      const bad = pairs.filter((x) => x.diff > RECT_TOL);
+      return bad.length ? `<span class="warn">⚠ Ściany naprzeciw różnią się: ${bad.map((x) => `${esc(edgeLabel(shape, x.i))} / ${esc(edgeLabel(shape, x.j))} o ${fmt(x.diff, settings.unit, true)}`).join(', ')}</span>` : '';
+    }
+    return !m.approx && m.gap > Math.max(10, m.perimeter * 0.005)
+      ? `<span class="warn">⚠ Wymiary nie domykają się o ${fmt(m.gap, settings.unit, true)}. Sprawdź kąty.</span>` : '';
+  }
+
   screen = {
     name: 'editor',
     onMeasure: (mm) => {
-      const s = ed.selected();
-      if (s && s.edge != null) {
-        const r = ed.setValue(mm, { advance: true });
-        if (r === 'next') toast(`✓ ${fmt(mm, settings.unit, true)} → następny odcinek`, 'ok');
-        else if (r === 'done') toast(`✓ ${fmt(mm, settings.unit, true)}. Wszystkie odcinki zmierzone`, 'ok');
-      } else {
-        toast(`Odczyt ${fmt(mm, settings.unit, true)}. Zaznacz odcinek, aby wstawić następny.`);
-        renderPanel();
-      }
+      if (put(mm)) return true;
+      toast(`Odczyt ${fmt(mm, settings.unit, true)}. Zaznacz odcinek, aby go wstawić.`);
+      setTimeout(renderPanel);
+      return false;
     },
     cleanup: () => {
       clearTimeout(saveTimer);
@@ -613,13 +717,23 @@ function showEdgeList(ed) {
     for (let i = 0; i < cnt; i++) {
       n++;
       const e = s.edges[i];
-      rows.push(`<li><button class="list-row" data-s="${s.id}" data-e="${i}"><span>${n}. ${esc(e.name || 'Odcinek')}</span><b class="${e.v ? '' : 'warn'}">${e.v ? fmt(e.v, settings.unit, true) : 'brak'}</b></button></li>`);
+      const bad = rectMismatch(s, i);
+      rows.push(`<li><button class="list-row" data-s="${s.id}" data-e="${i}"><span>${n}. ${esc(e.name || 'Odcinek')}</span><b class="${e.v && !bad ? '' : 'warn'}">${bad ? '⚠ ' : ''}${e.v ? fmt(e.v, settings.unit, true) : 'brak'}</b></button></li>`);
+      for (const mk of marksOf(s, i)) {
+        const vals = kindOf(mk).fields.map((f) => `${fieldLabel(mk, f).toLowerCase()} ${mk[f] != null ? fmt(mk[f], settings.unit) : '?'}`).join(' · ');
+        rows.push(`<li><button class="list-row sub" data-m="${mk.id}"><span>${esc(markName(mk))}<small>${esc(vals)}</small></span></button></li>`);
+      }
     }
   }
   const m = sheet(`<div class="form"><h3>Wymiary</h3>${rows.length ? `<ul class="list">${rows.join('')}</ul>` : '<p class="muted">Brak odcinków.</p>'}
     <button class="btn ghost wide" data-x>Zamknij</button></div>`);
   m.el.querySelector('[data-x]').onclick = () => m.close();
-  m.el.querySelectorAll('.list-row').forEach((b) => (b.onclick = () => {
+  m.el.querySelectorAll('.list-row[data-m]').forEach((b) => (b.onclick = () => {
+    const mk = ed.shapes.flatMap((s) => s.edges || []).flatMap((e) => e.marks || []).find((x) => x.id === b.dataset.m);
+    if (mk) ed.selectMark(mk);
+    m.close();
+  }));
+  m.el.querySelectorAll('.list-row[data-s]').forEach((b) => (b.onclick = () => {
     ed.select({ id: b.dataset.s, edge: +b.dataset.e });
     ed.reveal({ shape: ed.shapes.find((s) => s.id === b.dataset.s), edge: +b.dataset.e });
     m.close();
@@ -658,7 +772,7 @@ async function exportPng(p, image, f) {
     if (!b) return toast('Pusty rysunek', 'err');
     W = 2400;
     ui = 3.4; // Labels stay readable when the image is shown small on a phone.
-    const pad = 120;
+    const pad = 180; // Room for edge value and name pills outside the walls.
     const bw = Math.max(b.x1 - b.x0, 1), bh = Math.max(b.y1 - b.y0, 1);
     const scale = (W - pad * 2) / bw;
     const hh = header(W);
@@ -680,11 +794,23 @@ async function exportPng(p, image, f) {
   ctx.fillText(p.name, hh * 0.35, hh * 0.38);
   ctx.fillStyle = '#5b6675';
   ctx.font = `500 ${hh * 0.2}px -apple-system, system-ui, sans-serif`;
-  ctx.fillText(`${f?.name || ''} · ${fmtDate(Date.now())} · wymiary w ${settings.unit}`, hh * 0.35, hh * 0.74);
+  // Legend for point symbols that are on the drawing.
+  const used = new Set(p.shapes.flatMap((s) => s.edges || []).flatMap((e) => e.marks || []).map((mk) => kindOf(mk)).filter((K) => K.sym));
+  const legend = [...used].map((K) => `${K.sym} ${K.label.toLowerCase()}`).join(', ');
+  ctx.fillText(`${f?.name || ''} · ${fmtDate(Date.now())} · wymiary w ${settings.unit}${legend ? ` · ↑ od podłogi · ${legend}` : ''}`, hh * 0.35, hh * 0.74);
   ctx.fillStyle = '#e3e8ee';
   ctx.fillRect(0, hh - 2, W, 2);
   const blob = await toBlob(c, 'image/png');
   await shareFile(blob, `${slug(p.name)}.png`, p.name);
+}
+
+async function chooseMarkKind(title) {
+  return menu(title, Object.entries(MARK_KINDS).map(([k, K]) => ({
+    value: k,
+    label: K.label,
+    icon: `<span class="m-sym ${K.span ? 'span' : ''}" style="background:${K.color}">${K.sym || ''}</span>`,
+    hint: K.fields.map((f) => fieldLabel({ kind: k }, f).toLowerCase()).join(', '),
+  })));
 }
 
 // ---------- settings ----------

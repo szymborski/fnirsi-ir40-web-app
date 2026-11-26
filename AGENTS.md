@@ -41,5 +41,9 @@ Static PWA, vanilla ES modules, no build step, no backend. Hosted on GitHub Page
 - Static servers send heuristic cache headers, so the browser keeps old ES modules. Use `dev/serve.py` (`Cache-Control: no-store`).
 - Editor gestures: in the Wall tool, a drag from a free end of an open wall line continues the line. A drag from another vertex of the selected shape moves that vertex. Hand tool: drag moves the selected shape or its vertex, else pans.
 - `setPointerCapture` throws for synthetic `PointerEvent`s (tests). It is wrapped in try/catch.
-- Data model: world units = mm (sketch) or image px (photo). Edge values are stored in mm (`shape.edges[i].v`). Area uses measured lengths + drawn directions (`geometry.rebuild`), so the drawing scale does not matter.
+- Data model: world units = mm (sketch) or image px (photo). Edge values are stored in mm (`shape.edges[i].v`). Rectangle check (`rectPairs`): 4 corners within ~10° of 90°, opposite walls differ > `RECT_TOL` (10 mm). Area uses measured lengths + drawn directions (`geometry.rebuild`), so the drawing scale does not matter.
+- Wall marks (socket, window, …) are in `shape.edges[i].marks`, not in `shapes`. So edge split, close and undo carry them. Position = `d` (mm from corner `from`) scaled by the measured wall length (`markGeom`). Unmeasured: `t` (0..1).
+- Selection: edge `{ id, edge }`, wall mark `{ id: mark.id, mark: mark.id, field }`. Use `ed.selected()`, not `ed.sel`, to read it.
+- Auto-advance from a mark goes to the next empty field of the same mark, then to the next unmeasured wall. Optional mark fields never pull the flow back.
+- A reading is marked `used` before `put()`: the panel renders inside `put()` and must not offer the same reading as "Wstaw".
 - Debug handle: `window.dalmierzEditor` is the open editor.

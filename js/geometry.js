@@ -1,5 +1,6 @@
 // Geometry helpers: hit test, snap, area from measured edges.
 // Point = [x, y] in world units. Sketch: 1 unit ~ 1 mm. Photo: 1 unit = 1 image pixel.
+import { kindOf } from './marks.js';
 
 export const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 export const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
@@ -24,8 +25,8 @@ export function projectOnSeg(p, a, b) {
 }
 
 // Find the item under point p. tol is in world units.
-// Order: vertex of selected shape, text, edge (nearest).
-export function hitTest(shapes, p, tol, selectedId) {
+// Order: vertex of selected shape, text, wall mark, edge (nearest).
+export function hitTest(shapes, p, tol, selectedId, photo = false) {
   const sel = shapes.find((s) => s.id === selectedId);
   if (sel?.type === 'poly') {
     let best = null;
@@ -39,6 +40,17 @@ export function hitTest(shapes, p, tol, selectedId) {
     const s = shapes[k];
     if (s.type === 'text' && dist(p, [s.x, s.y]) < tol * 2.2) return { kind: 'text', shape: s };
   }
+  let bm = null;
+  for (const s of shapes) {
+    for (let i = 0; i < edgeCount(s); i++) {
+      for (const m of marksOf(s, i)) {
+        const g = markGeom(s, i, m, photo, kindOf(m).span);
+        const d = kindOf(m).span ? projectOnSeg(p, g.a0, g.a1)[2] : dist(p, g.c);
+        if (d < tol * 1.1 && (!bm || d < bm.d)) bm = { d, shape: s, index: i, mark: m };
+      }
+    }
+  }
+  if (bm) return { kind: 'mark', shape: bm.shape, index: bm.index, mark: bm.mark };
   let best = null;
   for (const s of shapes) {
     for (let i = 0; i < edgeCount(s); i++) {
@@ -202,4 +214,66 @@ export function bounds(shapes) {
     else if (s.type === 'text') add([s.x, s.y]);
   }
   return x0 === Infinity ? null : { x0, y0, x1, y1 };
+}
+
+// ---------- rectangle check ----------
+export const RECT_TOL = 10; // mm. Opposite walls of a rectangle that differ more get a warning.
+
+// Shape drawn as a rectangle (4 corners near 90 deg)? Return pairs of opposite edges with both values:
+// [{ i, j, diff }]. Else null.
+export function rectPairs(s) {
+  if (s.type !== 'poly' || !s.closed || s.pts.length !== 4) return null;
+  for (let i = 0; i < 4; i++) {
+    const p = s.pts[(i + 3) % 4], q = s.pts[i], r = s.pts[(i + 1) % 4];
+    const ux = p[0] - q[0], uy = p[1] - q[1], vx = r[0] - q[0], vy = r[1] - q[1];
+    const cos = (ux * vx + uy * vy) / ((Math.hypot(ux, uy) * Math.hypot(vx, vy)) || 1);
+    if (Math.abs(cos) > 0.17) return null; // More than ~10 deg from a right angle.
+  }
+  const out = [];
+  for (const [i, j] of [[0, 2], [1, 3]]) {
+    const a = s.edges[i]?.v, b = s.edges[j]?.v;
+    if (a && b) out.push({ i, j, diff: Math.abs(a - b) });
+  }
+  return out;
+}
+
+// Pair with a difference above RECT_TOL that has edge i, or null.
+export function rectMismatch(s, i) {
+  return rectPairs(s)?.find((p) => (p.i === i || p.j === i) && p.diff > RECT_TOL) || null;
+}
+
+// ---------- wall marks ----------
+// Mark = point or opening on a wall edge: s.edges[i].marks = [mark].
+// mark = { id, kind, name, from (0 = start vertex, 1 = end vertex), t (0..1, place when d is not known),
+//          d (mm from corner), w (width), z (height above floor), h (height) }.
+export function marksOf(s, i) {
+  return s.edges[i]?.marks || [];
+}
+
+// Find mark by id. Return { shape, edge, mark } or null.
+export function findMark(shapes, id) {
+  for (const s of shapes) {
+    for (let i = 0; i < edgeCount(s); i++) {
+      const m = marksOf(s, i).find((x) => x.id === id);
+      if (m) return { shape: s, edge: i, mark: m };
+    }
+  }
+  return null;
+}
+
+// Place of mark on its wall, in world units. Return { a0, a1 (span ends or same point), c (centre), corner, t0, t1 }.
+// mm to world: from measured wall length, else 1 mm = 1 unit (sketch). Photo with unmeasured wall: use t.
+export function markGeom(s, i, m, photo, span) {
+  const [a, b] = edgePts(s, i);
+  const L = dist(a, b) || 1;
+  const v = s.edges[i]?.v;
+  const k = v ? L / v : photo ? 0 : 1;
+  const clamp = (x) => Math.max(0, Math.min(1, x));
+  let t0 = m.d != null && k ? (m.d * k) / L : m.t ?? 0.5;
+  let t1 = span ? (m.w && k ? t0 + (m.w * k) / L : t0 + Math.min(0.2, 600 / L)) : t0;
+  t0 = clamp(t0); t1 = clamp(t1);
+  if (m.from === 1) { t0 = 1 - t0; t1 = 1 - t1; }
+  const at = (t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  const a0 = at(t0), a1 = at(t1);
+  return { a0, a1, c: mid(a0, a1), corner: m.from === 1 ? b : a, t0, t1 };
 }

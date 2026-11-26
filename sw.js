@@ -1,10 +1,10 @@
 // Offline cache. Network first: new deploy shows at once, cache serves when offline.
 // Change CACHE when the file list changes.
-const CACHE = 'dalmierz-v1';
+const CACHE = 'dalmierz-v2';
 const FILES = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/ble.js', 'js/db.js', 'js/editor.js', 'js/geometry.js', 'js/render.js',
-  'js/format.js', 'js/ui.js', 'js/image.js', 'js/backup.js', 'js/demo.js',
+  'js/format.js', 'js/ui.js', 'js/image.js', 'js/backup.js', 'js/demo.js', 'js/marks.js',
   'icons/icon.svg', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
 ];
 

@@ -1,7 +1,8 @@
 // Canvas editor for sketch and photo projects.
 // One finger: draw with current tool (or pan with hand tool). Tap: select. Two fingers: pan + zoom.
 import { render, fitView } from './render.js';
-import { dist, edgeCount, hitTest, snapPoint, bounds, fitShape } from './geometry.js';
+import { dist, edgeCount, edgePts, hitTest, snapPoint, bounds, fitShape, findMark, projectOnSeg } from './geometry.js';
+import { kindOf } from './marks.js';
 import { uid } from './db.js';
 
 const TAP_MOVE = 8; // px. More movement = drag.
@@ -21,7 +22,7 @@ export class Editor extends EventTarget {
     this.shapes = project.shapes;
     this.tool = this.photo ? 'dim' : 'line';
     this.magnet = true;
-    this.sel = null; // { id, edge }
+    this.sel = null; // edge: { id, edge }. Wall mark: { id: mark.id, mark: mark.id, field }
     this.undoStack = [];
     this.redoStack = [];
     this.pointers = new Map();
@@ -153,7 +154,7 @@ export class Editor extends EventTarget {
     const data = JSON.parse(json);
     this.shapes.length = 0;
     this.shapes.push(...data);
-    if (this.sel && !this.shapes.find((s) => s.id === this.sel.id)) this.sel = null;
+    if (this.sel && !this.selected()) this.sel = null;
     this.changed();
     this.emitSelect();
   }
@@ -186,8 +187,13 @@ export class Editor extends EventTarget {
     this.dispatchEvent(new Event('select'));
   }
 
+  // Edge: { shape, edge }. Wall mark: { shape, edge: null, markEdge, mark, field }.
   selected() {
     if (!this.sel) return null;
+    if (this.sel.mark) {
+      const f = findMark(this.shapes, this.sel.mark);
+      return f ? { shape: f.shape, edge: null, markEdge: f.edge, mark: f.mark, field: this.sel.field } : null;
+    }
     const s = this.shapes.find((x) => x.id === this.sel.id);
     return s ? { shape: s, edge: this.sel.edge } : null;
   }
@@ -199,10 +205,13 @@ export class Editor extends EventTarget {
   }
 
   // Next edge with no value, after current one. Wrap around.
+  // From a wall mark: start at the wall of the mark (it can be not measured yet).
   nextMissing() {
     const all = this.allEdges();
-    const cur = all.findIndex((e) => this.sel && e.shape.id === this.sel.id && e.edge === this.sel.edge);
-    for (let k = 1; k <= all.length; k++) {
+    const s = this.selected();
+    const ref = s ? { shape: s.shape, edge: s.mark ? s.markEdge : s.edge } : null;
+    const cur = all.findIndex((e) => ref && e.shape === ref.shape && e.edge === ref.edge);
+    for (let k = s?.mark ? 0 : 1; k <= all.length; k++) {
       const e = all[(cur + k + all.length) % all.length];
       if (!e.shape.edges[e.edge]?.v) return e;
     }
@@ -210,13 +219,20 @@ export class Editor extends EventTarget {
   }
 
   // Set value of selected edge. Return what happened.
+  // Wall mark: next empty field of the same mark first.
   setValue(mm, { advance = false } = {}) {
     const s = this.selected();
-    if (!s || s.edge == null) return 'none';
+    if (!s || (s.edge == null && !s.mark)) return 'none';
     this.snapshot();
-    s.shape.edges[s.edge].v = mm;
+    if (s.mark) s.mark[s.field] = mm;
+    else s.shape.edges[s.edge].v = mm;
     this.changed();
     if (advance) {
+      if (s.mark) {
+        const fs = kindOf(s.mark).fields;
+        const nf = fs.slice(fs.indexOf(s.field) + 1).find((f) => s.mark[f] == null);
+        if (nf) { this.select({ id: s.mark.id, mark: s.mark.id, field: nf }); return 'next'; }
+      }
       const n = this.nextMissing();
       if (n) { this.select({ id: n.shape.id, edge: n.edge }); this.reveal(n); return 'next'; }
       this.select(null);
@@ -224,6 +240,51 @@ export class Editor extends EventTarget {
     }
     this.emitSelect();
     return 'set';
+  }
+
+  // Value of the selected edge or mark field.
+  selectedValue() {
+    const s = this.selected();
+    if (!s) return null;
+    if (s.mark) return s.mark[s.field] ?? null;
+    return s.edge != null ? s.shape.edges[s.edge].v ?? null : null;
+  }
+
+  // ---------- wall marks ----------
+  addMark(kind) {
+    const s = this.selected();
+    if (!s || s.edge == null) return;
+    this.snapshot();
+    const e = s.shape.edges[s.edge];
+    e.marks = e.marks || [];
+    const m = { id: uid(), kind, name: '', from: 0, t: [0.5, 0.3, 0.7, 0.2, 0.8][e.marks.length % 5], d: null, w: null, z: null, h: null };
+    e.marks.push(m);
+    this.changed();
+    this.select({ id: m.id, mark: m.id, field: kindOf(m).fields[0] });
+  }
+
+  selectMark(m, field) {
+    const fs = kindOf(m).fields;
+    this.select({ id: m.id, mark: m.id, field: field || fs.find((f) => m[f] == null) || fs[0] });
+  }
+
+  updateMark(fn) {
+    const s = this.selected();
+    if (!s?.mark) return;
+    this.snapshot();
+    fn(s.mark);
+    const fs = kindOf(s.mark).fields;
+    if (!fs.includes(this.sel.field)) this.sel.field = fs[0];
+    this.changed();
+    this.emitSelect();
+  }
+
+  // Measured from the other corner. Value stays. Unmeasured mark keeps its place.
+  flipMark() {
+    this.updateMark((m) => {
+      m.from = m.from ? 0 : 1;
+      if (m.t != null) m.t = 1 - m.t;
+    });
   }
 
   // Pan so the edge is on screen (not under the panel).
@@ -245,6 +306,14 @@ export class Editor extends EventTarget {
     const s = this.selected();
     if (!s) return;
     this.snapshot();
+    if (s.mark) {
+      const e = s.shape.edges[s.markEdge];
+      e.marks = e.marks.filter((m) => m !== s.mark);
+      const n = { id: s.shape.id, edge: s.markEdge };
+      this.changed();
+      this.select(n);
+      return;
+    }
     if (s.shape.type === 'text' || s.edge == null) this.removeShape(s.shape);
     else this.removeEdge(s.shape, s.edge);
     this.sel = null;
@@ -435,7 +504,7 @@ export class Editor extends EventTarget {
       if (this.pointers.size > 2) return;
       const sp = pos(e);
       const wp = this.toWorld(...sp);
-      const hit = hitTest(this.shapes, wp, this.tol(e), this.sel?.id);
+      const hit = hitTest(this.shapes, wp, this.tol(e), this.sel?.id, this.photo);
       this.g = { type: 'pending', down: sp, wdown: wp, hit, t: Date.now(), e };
     });
 
@@ -514,6 +583,12 @@ export class Editor extends EventTarget {
       Object.assign(g, { type: 'vertex', shape: hit.shape, index: hit.index });
       return;
     }
+    // Selected mark with no distance yet: drag it along the wall.
+    if (hit?.kind === 'mark' && this.sel?.mark === hit.mark.id && hit.mark.d == null) {
+      this.snapshot();
+      Object.assign(g, { type: 'mark', shape: hit.shape, index: hit.index, mark: hit.mark });
+      return;
+    }
     const selText = hit?.kind === 'text' && this.sel?.id === hit.shape.id;
     if (selText || (this.tool === 'hand' && hit && this.sel?.id === hit.shape.id)) {
       this.snapshot();
@@ -542,6 +617,11 @@ export class Editor extends EventTarget {
       if (g.shape.type === 'text') { g.shape.x += dx; g.shape.y += dy; }
       else g.shape.pts = g.shape.pts.map((p) => [p[0] + dx, p[1] + dy]);
       g.moved = true;
+    } else if (g.type === 'mark') {
+      const [a, b] = edgePts(g.shape, g.index);
+      const t = projectOnSeg(wp, a, b)[1];
+      g.mark.t = g.mark.from === 1 ? 1 - t : t;
+      g.moved = true;
     } else if (g.type === 'vertex') {
       const s = g.shape, n = s.pts.length;
       // Angle snap from a neighbour vertex.
@@ -569,9 +649,9 @@ export class Editor extends EventTarget {
         if (this.tool === 'rect') this.addRect(g.start, g.cur);
         else this.addSegment(g.start, g.cur, this.tool === 'dim' ? 'dim' : 'wall');
       }
-    } else if ((g.type === 'vertex' || g.type === 'move') && g.moved) {
+    } else if ((g.type === 'vertex' || g.type === 'move' || g.type === 'mark') && g.moved) {
       this.changed();
-    } else if (g.type === 'vertex' || g.type === 'move') {
+    } else if (g.type === 'vertex' || g.type === 'move' || g.type === 'mark') {
       this.undoStack.pop();
     }
   }
@@ -586,6 +666,11 @@ export class Editor extends EventTarget {
     if (hit.kind === 'text') {
       if (this.sel?.id === hit.shape.id) this.dispatchEvent(new CustomEvent('edit-text', { detail: { shape: hit.shape } }));
       else this.select({ id: hit.shape.id, edge: null });
+      return;
+    }
+    if (hit.kind === 'mark') {
+      if (this.sel?.mark === hit.mark.id) this.dispatchEvent(new Event('edit-value'));
+      else this.selectMark(hit.mark);
       return;
     }
     if (hit.kind === 'edge') {

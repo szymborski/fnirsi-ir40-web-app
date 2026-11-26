@@ -1,11 +1,12 @@
 // Scene render. Used by editor, loupe, thumbnails and PNG export.
-import { edgeCount, edgePts, dist, mid, polyMetrics, centroid, signedArea } from './geometry.js';
+import { edgeCount, edgePts, dist, mid, polyMetrics, centroid, signedArea, marksOf, markGeom, rectMismatch } from './geometry.js';
+import { kindOf } from './marks.js';
 import { fmt, fmtArea } from './format.js';
 
 const C = {
   wall: '#1f2a37', wallPhoto: '#ffd60a',
   dim: '#0a84ff', dimPhoto: '#40c8ff',
-  sel: '#ff375f', next: '#ff9f0a',
+  sel: '#ff375f', next: '#ff9f0a', bad: '#c2410c',
   label: '#ffffff', labelBg: '#1f2a37', missingBg: '#ff9f0a',
   grid: '#e7ebf0', gridMajor: '#d3d9e1',
 };
@@ -32,6 +33,7 @@ export function render(ctx, w, h, shapes, view, opt) {
   const wallColor = opt.photo ? C.wallPhoto : C.wall;
   const dimColor = opt.photo ? C.dimPhoto : C.dim;
   const labels = [];
+  const marks = [];
 
   for (const s of shapes) {
     if (s.type !== 'poly') continue;
@@ -62,10 +64,12 @@ export function render(ctx, w, h, shapes, view, opt) {
       if (lenPx < 18 * ui && !edgeSel) continue;
       let outward = 1;
       if (s.closed) outward = signedArea(s.pts) > 0 ? -1 : 1;
-      const text = e.v ? fmt(e.v, opt.unit) : edgeSel ? '…' : '?';
+      const bad = !!(e.v && rectMismatch(s, i)); // Opposite wall of a rectangle differs.
+      const text = e.v ? `${bad ? '⚠ ' : ''}${fmt(e.v, opt.unit)}` : edgeSel ? '…' : '?';
       const sub = e.name || '';
-      labels.push({ a: sa, b: sb, text, sub, missing: !e.v, sel: edgeSel, outward, isDim });
+      labels.push({ a: sa, b: sb, text, sub, missing: !e.v, sel: edgeSel, outward, isDim, bad });
     }
+    if (!s.draft) for (let i = 0; i < edgeCount(s); i++) if (marksOf(s, i).length) marks.push([s, i]);
 
     // Vertex handles for selected shape.
     if (isSel) {
@@ -98,6 +102,7 @@ export function render(ctx, w, h, shapes, view, opt) {
   }
 
   for (const L of labels) drawEdgeLabel(ctx, L, ui, opt.photo);
+  for (const [s, i] of marks) drawEdgeMarks(ctx, s, i, S, opt, ui);
 
   for (const s of shapes) {
     if (s.type !== 'text') continue;
@@ -121,6 +126,99 @@ export function render(ctx, w, h, shapes, view, opt) {
     ctx.lineWidth = 3 * ui;
     ctx.stroke();
   }
+  ctx.restore();
+}
+
+// Wall marks of one edge. Running dimensions from the corner: one dashed line per corner,
+// a tick at each mark and a short text across the wall ("1250 ↑520" = 1250 from corner, 520 above floor).
+// Symbol (point) or band (opening) sits on the wall. Openings also get a pill with name and size.
+function drawEdgeMarks(ctx, s, i, S, opt, ui) {
+  const list = marksOf(s, i);
+  if (!list.length) return;
+  const [a, b] = edgePts(s, i);
+  const sa = S(a), sb = S(b);
+  let nx = -(sb[1] - sa[1]), ny = sb[0] - sa[0];
+  const nl = Math.hypot(nx, ny) || 1;
+  nx /= nl; ny /= nl;
+  const outward = s.closed ? (signedArea(s.pts) > 0 ? -1 : 1) : 1;
+  const ix = -nx * outward, iy = -ny * outward; // Into the room.
+  const off = (p, o) => [p[0] + ix * o, p[1] + iy * o];
+  let ang = Math.atan2(sb[1] - sa[1], sb[0] - sa[0]);
+  if (ang > Math.PI / 2 || ang < -Math.PI / 2) ang += Math.PI;
+  const f = (v) => (v != null ? fmt(v, opt.unit) : '?');
+  const items = list.map((m) => {
+    const K = kindOf(m);
+    const g = markGeom(s, i, m, opt.photo, K.span);
+    const sel = opt.sel?.mark === m.id;
+    return { m, K, g, sel, color: sel ? C.sel : K.color, show: m.d != null || sel };
+  });
+
+  // Dashed line from each used corner to the farthest mark.
+  for (const from of [0, 1]) {
+    const grp = items.filter((it) => (it.m.from === 1 ? 1 : 0) === from && it.show);
+    if (!grp.length) continue;
+    const o = (from ? 22 : 12) * ui;
+    const c = S(grp[0].g.corner);
+    const far = grp.reduce((x, y) => (dist(S(y.g.a0), c) > dist(S(x.g.a0), c) ? y : x));
+    ctx.save();
+    ctx.setLineDash([5 * ui, 4 * ui]);
+    line(ctx, off(c, o), off(S(far.g.a0), o), 1.5 * ui, grp.some((it) => it.sel) ? C.sel : '#8a94a3');
+    ctx.restore();
+    line(ctx, off(c, o - 5 * ui), off(c, o + 5 * ui), 1.5 * ui, '#8a94a3');
+    for (const it of grp) {
+      const p = S(it.g.a0);
+      line(ctx, off(p, o - 5 * ui), off(p, o + 5 * ui), 2 * ui, it.color);
+      const parts = [f(it.m.d)];
+      if (!it.K.span && it.K.fields.includes('z')) parts.push(`↑${f(it.m.z)}`);
+      if (!it.K.span && it.m.name) parts.push(it.m.name);
+      acrossText(ctx, off(p, o + 7 * ui), ix, iy, parts.join(' '), it.sel ? C.sel : '#1f2a37', ui, opt.photo);
+    }
+  }
+
+  for (const it of items) {
+    const p0 = S(it.g.a0), p1 = S(it.g.a1);
+    if (it.K.span) {
+      line(ctx, p0, p1, 9 * ui, it.color);
+      line(ctx, p0, p1, 3 * ui, '#fff');
+      const parts = [it.m.name || it.K.label];
+      if (it.m.w != null || it.m.h != null) parts.push(it.K.fields.includes('h') ? `${f(it.m.w)}×${f(it.m.h)}` : f(it.m.w));
+      if (it.K.fields.includes('z') && it.m.z != null) parts.push(`↑${f(it.m.z)}`);
+      const [x, y] = off(S(it.g.c), 56 * ui);
+      pill(ctx, x, y, parts.join(' '), ang, ui, opt.photo ? 'rgba(0,0,0,0.75)' : 'rgba(255,255,255,0.94)', opt.photo ? '#fff' : it.sel ? C.sel : '#1f2a37', 11, false, true);
+    } else {
+      ctx.beginPath();
+      ctx.arc(p0[0], p0[1], 8.5 * ui, 0, Math.PI * 2);
+      ctx.fillStyle = it.color;
+      ctx.fill();
+      ctx.lineWidth = 2 * ui;
+      ctx.strokeStyle = '#fff';
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.font = `800 ${(it.K.sym.length > 1 ? 7.5 : 10) * ui}px -apple-system, system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(it.K.sym, p0[0], p0[1] + 0.5 * ui);
+    }
+  }
+}
+
+// Text that starts at p and goes in direction (dx, dy), never upside down. Halo keeps it readable on lines.
+function acrossText(ctx, p, dx, dy, text, color, ui, photo) {
+  let ang = Math.atan2(dy, dx);
+  let align = 'left';
+  if (ang > Math.PI / 2 || ang < -Math.PI / 2) { ang += Math.PI; align = 'right'; }
+  ctx.save();
+  ctx.translate(p[0], p[1]);
+  ctx.rotate(ang);
+  ctx.font = `700 ${11 * ui}px -apple-system, system-ui, sans-serif`;
+  ctx.textAlign = align;
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = 3.5 * ui;
+  ctx.strokeStyle = photo ? 'rgba(0,0,0,0.8)' : 'rgba(255,255,255,0.95)';
+  ctx.strokeText(text, 0, 0);
+  ctx.fillStyle = photo ? '#fff' : color;
+  ctx.fillText(text, 0, 0);
   ctx.restore();
 }
 
@@ -191,7 +289,7 @@ function drawEdgeLabel(ctx, L, ui, photo) {
   const m = mid(a, b);
   const off = (L.isDim ? 0 : 16) * ui * L.outward;
   const x = m[0] + nx * off, y = m[1] + ny * off;
-  const bg = L.sel ? C.sel : L.missing ? C.missingBg : photo ? 'rgba(0,0,0,0.75)' : C.labelBg;
+  const bg = L.sel ? C.sel : L.missing ? C.missingBg : L.bad ? C.bad : photo ? 'rgba(0,0,0,0.75)' : C.labelBg;
   const size = L.missing && !L.sel ? 12 : 14;
   pill(ctx, x, y, L.text, ang, ui, bg, C.label, size, true);
   if (L.sub) {

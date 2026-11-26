@@ -17,6 +17,11 @@ Do czego: oglądanie mieszkań, kuchnie i meble na wymiar, zbieranie wymiarów p
 - **Rysunek**: przeciągasz palcem, żeby narysować ścianę. Kolejna ściana zaczyna się od końca poprzedniej, a połączenie z początkiem zamyka pomieszczenie. Magnes przyciąga do punktów, kątów 45°/90° i do linii innych punktów. Jest też prostokąt, linia wymiaru (np. okno, przekątna) i notatki tekstowe.
 - **Zdjęcie**: robisz zdjęcie albo bierzesz je z galerii, a potem rysujesz na nim linie wymiarów. Zoom dwoma palcami. Lupa nad palcem pokazuje dokładne miejsce.
 - **Pomiar z dalmierza**: zaznaczasz odcinek i naciskasz przycisk na IR40. Wartość wpada do odcinka, a aplikacja sama zaznacza następny niezmierzony. Pokój mierzysz bez dotykania telefonu. Krótki dźwięk potwierdza odczyt.
+- **Cofnij po odczycie**: laser trafił w szafkę zamiast w ścianę? Stuknij „Cofnij” w komunikacie. Poprzednia wartość wraca, a ten sam odcinek jest znów zaznaczony, więc mierzysz go jeszcze raz.
+- **Punkty na ścianie**: gniazdko, woda, odpływ, gaz, wentylacja, okno, drzwi, grzejnik. Zaznacz ścianę, stuknij „+ Punkt” i zmierz dalmierzem po kolei: odległość od narożnika, wysokość od podłogi (okno: szerokość, parapet, wysokość). Na rysunku i w PNG są wymiary od narożnika, np. `1250 ↑520`.
+- **Kontrola prostokąta**: gdy ściany naprzeciw siebie różnią się o więcej niż 10 mm, aplikacja ostrzega przy pomiarze i oznacza je ⚠ na rysunku.
+- Odczyt bez zaznaczonego odcinka nie ginie: po zaznaczeniu odcinka stuknij „Wstaw”.
+- Komunikat i dźwięk, gdy dalmierz się rozłączy.
 - Wymiar możesz też wpisać ręcznie (stuknij wartość).
 - **Pole i obwód** zamkniętych kształtów. Ostrzeżenie, gdy wymiary się nie domykają (krzywe ściany, błąd pomiaru). Przycisk „Dopasuj kształt” przerysowuje kształt w skali.
 - **Eksport PNG** z wymiarami (np. do wysłania stolarzowi).
