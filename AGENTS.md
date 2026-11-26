@@ -38,6 +38,7 @@ Static PWA, vanilla ES modules, no build step, no backend. Hosted on GitHub Page
 - Storage: IndexedDB only. Safari can delete script storage after 7 days without use. Removing Bluefy removes its data. Keep backup export/import working.
 - Photos: scale to max 2560 px JPEG before save. The browser applies EXIF rotation on draw.
 - Service worker: network-first (no stale deploys). In WKWebView browsers (Bluefy) a service worker can be absent. The app must work without it. Change `CACHE` in `sw.js` when the file list changes.
+- Updates: GitHub Pages sends `max-age=600`. On start the app reads `version.json` (no-store). If it differs from `APP_VERSION`, it fetches the loaded files with `cache: 'reload'` and shows "Odśwież". On release change `APP_VERSION` and `version.json` together (test checks).
 - Static servers send heuristic cache headers, so the browser keeps old ES modules. Use `dev/serve.py` (`Cache-Control: no-store`).
 - Editor gestures: in the Wall tool, a drag from a free end of an open wall line continues the line. A drag from another vertex of the selected shape moves that vertex. Hand tool: drag moves the selected shape or its vertex, else pans.
 - `setPointerCapture` throws for synthetic `PointerEvent`s (tests). It is wrapped in try/catch.

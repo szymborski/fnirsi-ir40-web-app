@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { parsePacket, TAG } from '../js/ble.js';
 import { polyMetrics, snapPoint, rectPairs, rectMismatch, markGeom, hitTest } from '../js/geometry.js';
 import { fmt, parse } from '../js/format.js';
+import { readFileSync } from 'node:fs';
 
 const bytes = (s) => Uint8Array.from(s.split(' ').map((x) => parseInt(x, 16)));
 
@@ -68,4 +69,8 @@ assert.equal(markGeom(wall, 0, { ...mk, d: null, t: 0.3 }, false, false).c[0], 3
 wall.edges[0].marks.push(mk);
 assert.equal(hitTest([wall], [25, 1], 3).kind, 'mark');
 assert.equal(hitTest([wall], [60, 1], 3).kind, 'edge');
+// version.json must match APP_VERSION, or the app shows "new version" all the time.
+const appSrc = readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
+const ver = JSON.parse(readFileSync(new URL('../version.json', import.meta.url), 'utf8')).version;
+assert.equal(appSrc.match(/APP_VERSION = '([^']+)'/)[1], ver);
 console.log('all tests passed');

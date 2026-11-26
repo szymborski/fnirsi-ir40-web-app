@@ -10,8 +10,9 @@ import { importPhoto, pickPhoto, blobToImage, toBlob } from './image.js';
 import { exportBackup, importBackup, pickFile } from './backup.js';
 import { $, h, toast, ask, confirmBox, menu, sheet, beep, shareFile } from './ui.js';
 import { seedDemo } from './demo.js';
+import { latestVersion, refreshFiles } from './update.js';
 
-export const APP_VERSION = '1.1.1';
+export const APP_VERSION = '1.1.2'; // Change also version.json.
 
 const app = $('#app');
 const settings = { unit: 'mm', sound: true, sim: false };
@@ -62,7 +63,28 @@ async function boot() {
   if (!settings.sim) ir40.reconnectKnown().then((ok) => ok && toast('Dalmierz połączony', 'ok'));
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     navigator.serviceWorker.register('sw.js').catch(() => {});
+    checkUpdate();
+    document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && checkUpdate());
   }
+}
+
+// Look for a new deploy. On start and when the app comes back to the front, max once per 5 min.
+let lastCheck = 0;
+async function checkUpdate(manual = false) {
+  if (!manual && Date.now() - lastCheck < 5 * 60e3) return;
+  lastCheck = Date.now();
+  let v;
+  try { v = await latestVersion(); } catch {
+    if (manual) toast('Brak połączenia z serwerem', 'err');
+    return;
+  }
+  if (v === APP_VERSION) {
+    if (manual) toast(`Masz najnowszą wersję (${v})`, 'ok');
+    return;
+  }
+  await refreshFiles();
+  if (manual) location.reload();
+  else toast(`Nowa wersja ${v}`, '', { action: { label: 'Odśwież', run: () => location.reload() }, ms: 15000 });
 }
 
 function saveSettings() {
@@ -912,14 +934,15 @@ async function showSettings() {
       <button class="menu-item" data-sim><span class="mi-text">Tryb testowy (bez dalmierza)<small>${settings.sim ? 'włączony' : 'wyłączony'}</small></span></button>
       <button class="menu-item" data-backup><span class="mi-text">Kopia zapasowa wszystkiego<small>Plik .json ze zdjęciami. Zapisz w Plikach / iCloud.</small></span></button>
       <button class="menu-item" data-import><span class="mi-text">Wczytaj kopię zapasową</span></button>
+      <button class="menu-item" data-update><span class="mi-text">Sprawdź aktualizację<small>Wersja ${APP_VERSION}</small></span></button>
       <button class="menu-item" data-log><span class="mi-text">Log Bluetooth<small>Ostatnie pakiety z dalmierza</small></span></button>
     </div>
     <p class="muted small">Dane są tylko na tym urządzeniu (IndexedDB).
-      ${info ? `Zajęte: ${mb(info.usage)} MB. Trwałe przechowywanie: ${info.persisted ? 'tak' : 'nie (rób kopie zapasowe)'}.` : ''}
-      Wersja ${APP_VERSION}.</p>
+      ${info ? `Zajęte: ${mb(info.usage)} MB. Trwałe przechowywanie: ${info.persisted ? 'tak' : 'nie (rób kopie zapasowe)'}.` : ''}</p>
     <button class="btn ghost wide" data-x>Zamknij</button></div>`);
   const $m = (s) => m.el.querySelector(s);
   $m('[data-x]').onclick = () => m.close();
+  $m('[data-update]').onclick = () => { m.close(); checkUpdate(true); };
   $m('[data-unit]').onclick = async () => { m.close(); await chooseUnit(); route(); };
   $m('[data-sound]').onclick = async () => { settings.sound = !settings.sound; await saveSettings(); m.close(); showSettings(); };
   $m('[data-sim]').onclick = async () => { settings.sim = !settings.sim; await saveSettings(); m.close(); route(); };
