@@ -107,7 +107,7 @@ small { display: block; color: var(--muted); font-size: 13px; }
 
 .panel {
   background: var(--card); border-top: 1px solid var(--line); padding: 10px 12px;
-  min-height: 64px; max-height: 40vh; overflow-y: auto; z-index: 4;
+  min-height: 44px; max-height: 40vh; overflow-y: auto; z-index: 4;
 }
 .p-row { display: flex; align-items: center; gap: 12px; }
 .p-value { text-align: left; background: #f1f4f8; border-radius: 12px; padding: 6px 14px; min-width: 132px; }
@@ -131,6 +131,11 @@ small { display: block; color: var(--muted); font-size: 13px; }
 .p-field b { font-size: 21px; font-variant-numeric: tabular-nums; }
 .p-field.missing { background: #fff1d6; }
 .p-field.on { border-color: #ff375f; background: #fff; }
+.p-tip.one { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; margin: 0; min-height: 24px; }
+.p-tip.one span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p-tip.one.open span { white-space: normal; }
+.p-tip.one i { flex: none; width: 22px; height: 22px; border-radius: 11px; border: 1.5px solid currentColor; display: grid; place-items: center; font: 600 13px/1 Georgia, serif; font-style: italic; }
+.p-tip.one.open i { font: 600 15px/1 -apple-system, sans-serif; }
 .p-tip.small { font-size: 13px; margin-top: 6px; }
 .m-sym { width: 30px; height: 30px; border-radius: 50%; color: #fff; font-weight: 800; font-size: 13px; display: grid; place-items: center; flex: none; }
 .m-sym.span { border-radius: 6px; height: 14px; }

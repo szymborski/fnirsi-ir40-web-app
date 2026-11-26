@@ -11,7 +11,7 @@ import { exportBackup, importBackup, pickFile } from './backup.js';
 import { $, h, toast, ask, confirmBox, menu, sheet, beep, shareFile } from './ui.js';
 import { seedDemo } from './demo.js';
 
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.1.1';
 
 const app = $('#app');
 const settings = { unit: 'mm', sound: true, sim: false };
@@ -452,6 +452,7 @@ async function showProject(id) {
   window.dalmierzEditor = ed; // Debug handle for console and tests.
 
   let saveTimer = null, thumbTimer = null, deleted = false;
+  let tipOpen = false; // full tool tip in the panel
   const save = async () => {
     p.updatedAt = Date.now();
     await db.put('projects', p);
@@ -645,31 +646,32 @@ async function showProject(id) {
             <small>${esc(e.name || `Odcinek ${idx}`)}</small>
             <b>${e.v ? fmt(e.v, settings.unit) : '—'}<i>${settings.unit}</i></b>
           </button>
-          <div class="p-hint ${live ? 'live' : ''}">${live ? '<span class="pulse"></span>Naciśnij pomiar na dalmierzu' : 'Stuknij wartość, aby wpisać, albo połącz dalmierz'}</div>
+          <div class="p-hint ${live ? 'live' : ''}">${live ? '<span class="pulse"></span>Zmierz dalmierzem' : 'Stuknij liczbę, aby wpisać'}</div>
           ${!ed.photo && s.shape.style !== 'dim' ? `<button class="cam-btn ${e.photo ? 'on' : ''}" data-wall-photo aria-label="Zdjęcie ściany">${ICON.camera}<small>${e.photo ? 'Zdjęcie' : '+ Zdjęcie'}</small></button>` : ''}
         </div>
         <div class="p-actions">
           ${readChips}
           ${parent ? `<button class="chip" data-parent>↩ Rzut</button>` : ''}
           ${!ed.photo && s.shape.style !== 'dim' ? '<button class="chip" data-add-mark>+ Punkt</button>' : ''}
-          <button class="chip" data-edge-name>${e.name ? '✎ Nazwa' : '+ Nazwa'}</button>
-          ${!ed.photo && edgeCount(s.shape) > 1 ? `<button class="chip" data-shape-name>${s.shape.name ? esc(s.shape.name) : '+ Nazwa kształtu'}</button>` : ''}
+          <button class="chip" data-edge-name>${e.name || s.shape.name ? '✎ Nazwa' : '+ Nazwa'}</button>
           ${!ed.photo && edgeCount(s.shape) > 1 ? '<button class="chip" data-fitshape>Dopasuj</button>' : ''}
           <button class="chip danger icon" data-delmenu aria-label="Usuń">${ICON.trash}</button>
         </div>
         ${m ? `<div class="p-metrics">Pole <b>${m.approx ? '≈ ' : ''}${fmtArea(m.area)}</b> · Obwód <b>${fmt(m.perimeter, settings.unit, true)}</b>
           ${warnings(s.shape, m)}</div>` : ''}`;
     } else {
-      const hints = {
-        hand: 'Przeciągnij, aby przesunąć widok. Zaznacz kształt, potem przeciągnij go albo jego punkt.',
-        line: 'Przeciągnij palcem, aby narysować ścianę. Zacznij od końca linii, aby rysować dalej. Połącz z początkiem, aby zamknąć pomieszczenie.',
-        rect: 'Przeciągnij po skosie, aby narysować prostokąt. Potem przesuń rogi.',
-        dim: 'Przeciągnij, aby dodać linię wymiaru, np. wysokość okna albo przekątną.',
-        text: 'Stuknij w miejsce na rysunku, aby dodać notatkę.',
+      // Short tip in one line. Tap it to see the full text.
+      const tips = {
+        hand: ['Przeciągnij: przesuń widok lub kształt', 'Przeciągnij, aby przesunąć widok. Zaznacz kształt, potem przeciągnij go albo jego punkt.'],
+        line: ['Przeciągnij palcem, aby narysować ścianę', 'Zacznij od końca linii, aby rysować dalej. Połącz z początkiem, aby zamknąć pomieszczenie.'],
+        rect: ['Przeciągnij po skosie: prostokąt', 'Potem przesuń rogi.'],
+        dim: ['Przeciągnij: linia wymiaru', 'Np. wysokość okna albo przekątna.'],
+        text: ['Stuknij w rysunek, aby dodać notatkę', ''],
       };
+      const [short, more] = tips[ed.tool];
       const recent = readings.slice(0, 4);
       html = `${parent ? `<div class="p-actions top"><button class="chip" data-parent>↩ Rzut: ${esc(parent.name)}</button></div>` : ''}
-        <p class="p-tip">${hints[ed.tool]} Dwa palce: przesuń i powiększ.</p>
+        <button class="p-tip one ${tipOpen ? 'open' : ''}" data-tip><span>${short}${tipOpen ? `. ${more ? `${more} ` : ''}Dwa palce: przesuń i powiększ.` : ''}</span><i>${tipOpen ? '×' : 'i'}</i></button>
         ${recent.length ? `<div class="p-actions"><small class="muted">Odczyty:</small>${recent.map((r) => `<span class="chip ghost">${fmt(r.mm, settings.unit, true)}</span>`).join('')}</div>` : ''}`;
     }
     panel.innerHTML = html;
@@ -716,13 +718,24 @@ async function showProject(id) {
       if (v === 'shape') ed.deleteShape();
     });
     panel.querySelector('[data-edit-text]')?.addEventListener('click', () => editText(s.shape));
+    panel.querySelector('[data-tip]')?.addEventListener('click', () => { tipOpen = !tipOpen; renderPanel(); });
+    // One chip for both names: wall name and shape (room) name.
     panel.querySelector('[data-edge-name]')?.addEventListener('click', async () => {
-      const n = await ask('Nazwa odcinka', s.shape.edges[s.edge].name, { placeholder: 'np. ściana z oknem', suggestions: ['Szerokość', 'Wysokość', 'Głębokość', 'Okno', 'Drzwi', 'Wnęka', 'Przekątna'] });
-      if (n != null) ed.renameEdge(n);
-    });
-    panel.querySelector('[data-shape-name]')?.addEventListener('click', async () => {
-      const n = await ask('Nazwa kształtu', s.shape.name || '', { placeholder: 'np. Kuchnia', suggestions: NAME_HINTS });
-      if (n != null) ed.renameShape(n);
+      const e = s.shape.edges[s.edge];
+      let what = 'edge';
+      if (!ed.photo && edgeCount(s.shape) > 1) {
+        what = await menu('Nazwa', [
+          { label: 'Nazwa ściany', value: 'edge', hint: e.name || 'brak' },
+          { label: 'Nazwa pomieszczenia', value: 'shape', hint: s.shape.name || 'brak' },
+        ]);
+      }
+      if (what === 'edge') {
+        const n = await ask('Nazwa odcinka', e.name, { placeholder: 'np. ściana z oknem', suggestions: ['Szerokość', 'Wysokość', 'Głębokość', 'Okno', 'Drzwi', 'Wnęka', 'Przekątna'] });
+        if (n != null) ed.renameEdge(n);
+      } else if (what === 'shape') {
+        const n = await ask('Nazwa pomieszczenia', s.shape.name || '', { placeholder: 'np. Kuchnia', suggestions: NAME_HINTS });
+        if (n != null) ed.renameShape(n);
+      }
     });
     panel.querySelector('[data-fitshape]')?.addEventListener('click', () => {
       if (ed.fitSelectedShape()) toast('Kształt dopasowany do wymiarów', 'ok');
