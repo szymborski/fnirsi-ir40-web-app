@@ -82,3 +82,7 @@ Szczegóły protokołu i nieoczywiste problemy: [AGENTS.md](AGENTS.md).
 ## Podziękowania
 
 Protokół BLE na podstawie [MultiMote/fnirsi-ir40-webtool](https://github.com/MultiMote/fnirsi-ir40-webtool) i [pollopersiano/fnirsi-ir40-cad-bridge](https://github.com/pollopersiano/fnirsi-ir40-cad-bridge), potwierdzony na prawdziwym urządzeniu.
+
+## Licencja
+
+[MIT](LICENSE)
